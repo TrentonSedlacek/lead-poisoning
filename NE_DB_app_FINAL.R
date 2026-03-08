@@ -691,9 +691,9 @@ server <- function(input, output, session) {
       d <- d |> filter(!is.na(.data[[bll_col]]), !is.na(n_children))
       if (nrow(d) == 0) return(tibble())
       d |> summarize(
-        n_children = sum(n_children), n_elevated = sum(n_elevated),
         mean_bll = if (use_geo()) exp(weighted.mean(log(pmax(.data[[bll_col]], 0.1)), n_children))
                    else weighted.mean(.data[[bll_col]], n_children),
+        n_children = sum(n_children), n_elevated = sum(n_elevated),
         n_addresses = sum(n_addresses, na.rm = TRUE),
         addr_elevated = sum(addr_elevated, na.rm = TRUE),
         county = first(county), .by = geo_id) |>
