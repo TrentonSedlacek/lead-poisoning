@@ -472,24 +472,25 @@ ui <- dashboardPage(
               fluidRow(
                 valueBox({
                   if (!is.null(acs_u6_ts) && !is.null(acs_u6_ts$state)) {
-                    pop_2023 <- acs_u6_ts$state$n_children_u6[acs_u6_ts$state$acs_year == 2023]
-                    if (length(pop_2023) > 0 && pop_2023 > 0) {
-                      rate <- round(sum(first_test$elevated, na.rm = TRUE) / pop_2023 * 1000, 1)
-                      paste0(rate, " per 1,000")
-                    } else "N/A"
+                    yearly <- first_test |> group_by(sample_year) |>
+                      summarize(n_elev = sum(elevated, na.rm = TRUE), .groups = "drop") |>
+                      mutate(acs_yr = sapply(sample_year, acs_year_map))
+                    yearly <- yearly |> left_join(acs_u6_ts$state |> rename(acs_yr = acs_year),
+                                                  by = "acs_yr")
+                    yearly <- yearly |> filter(!is.na(n_children_u6), n_children_u6 > 0) |>
+                      mutate(rate = n_elev / n_children_u6 * 1000)
+                    if (nrow(yearly) > 0) paste0(round(mean(yearly$rate), 1), " per 1,000") else "N/A"
                   } else "N/A"
-                }, "Cumulative Elevated Rate (per 1,000 Under-6, 2023 ACS)",
+                }, "Avg Annual Elevated Rate (per 1,000 Under-6)",
                 icon = icon("chart-line"), color = "purple", width = 6),
                 valueBox({
                   if (!is.null(acs_u6_ts) && !is.null(acs_u6_ts$state)) {
                     pop_2023 <- acs_u6_ts$state$n_children_u6[acs_u6_ts$state$acs_year == 2023]
-                    if (length(pop_2023) > 0 && pop_2023 > 0) {
-                      format(pop_2023, big.mark = ",")
-                    } else "N/A"
+                    if (length(pop_2023) > 0 && pop_2023 > 0) format(pop_2023, big.mark = ",") else "N/A"
                   } else "N/A"
                 }, "ACS Under-6 Population (2023)",
                 icon = icon("users"), color = "teal", width = 6)),
-              p(em("Cumulative Elevated Rate = total elevated children (all years) divided by the 2023 ACS Under-6 population estimate, multiplied by 1,000. This is a period prevalence measure, not a single-year rate."),
+              p(em("Avg Annual Rate = mean of (elevated children / year-matched ACS Under-6 pop * 1,000) across all years with ACS data."),
                 style = "font-size: 11px; color: #666; padding: 0 15px;")
       ),
 
@@ -545,7 +546,7 @@ ui <- dashboardPage(
                     leafletOutput("ranked_map", height = 500), hr(),
                     downloadButton("dl_ranked", "Download Displayed Addresses"),
                     br(), br(),
-                    div(style = "height: 300px; overflow-y: auto;", DTOutput("ranked_table"))),
+                    DTOutput("ranked_table"))),
                 box(width = 3, title = "Options",
                     sliderInput("ranked_years", "Year Range:",
                                 min = min(years), max = max(years),
@@ -571,7 +572,6 @@ ui <- dashboardPage(
               fluidRow(
                 box(width = 9,
                     leafletOutput("census_map", height = 380),
-                    checkboxInput("census_quintile", "Display by Quintile", FALSE),
                     hr(),
                     h5("Lead Outcomes by Quintile"),
                     fluidRow(
@@ -585,6 +585,7 @@ ui <- dashboardPage(
                     h5("Area Details"),
                     downloadButton("dl_area_detail", "Download Area Details")),
                 box(width = 3, title = "Options",
+                    checkboxInput("census_quintile", "Display by Quintile", FALSE),
                     selectInput("census_var", "Map Variable:",
                                 c("Pre-1980 Housing (%)" = "pct_pre1980",
                                   "Pre-1950 Housing (%)" = "pct_pre1950",
@@ -695,7 +696,7 @@ ui <- dashboardPage(
                                                    "Median House Value ($)" = "median_house_value",
                                                    "Non-White (%)" = "pct_nonwhite",
                                                    "Housing Density (log)" = "log_housing_density"),
-                                       selected = "pct_pre1980"),
+                                       selected = c("pct_pre1980", "pct_poverty")),
                     h5("Address Variables (First Child):"),
                     checkboxGroupInput("addr_covars", NULL,
                                        choices = c("First Child's BLL" = "first_bll",
@@ -704,9 +705,11 @@ ui <- dashboardPage(
                                                    "First Child Age (years, categorical)" = "first_age_yr_cat",
                                                    "First Child Sex" = "first_sex",
                                                    "Sample Type" = "first_sample_type"),
-                                       selected = c("first_bll", "first_year")),
+                                       selected = c("first_year")),
                     conditionalPanel("input.addr_covars.indexOf('first_bll') > -1",
-                      checkboxInput("use_log_bll", "Use log(BLL) instead of raw BLL", FALSE)),
+                      checkboxInput("use_log_bll", "Use log(BLL) instead of raw BLL", FALSE),
+                      p(em("Warning: Including First BLL inflates model metrics. Useful for retrospective analysis but not for proactive outreach (before testing)."),
+                        style = "font-size: 10px; color: #c00; padding: 0 5px;")),
                     hr(),
                     h5("Models:"),
                     p(em("Three models run simultaneously: ", strong("Multilevel"), " (GLMER with random intercept), ",
@@ -2239,6 +2242,8 @@ server <- function(input, output, session) {
     numeric_covars <- setdiff(all_covars, c(factor_covars, re_covars))
 
     d <- md
+    # Deduplicate by AddressIdentifier — census joins can create duplicates
+    d <- d |> distinct(AddressIdentifier, .keep_all = TRUE)
     if (length(numeric_covars) > 0) d <- d %>% filter(if_all(all_of(numeric_covars), ~ !is.na(.) & is.finite(.)))
     if (length(factor_covars) > 0)  d <- d %>% filter(if_all(all_of(factor_covars), ~ !is.na(.)))
     if (length(re_covars) > 0) {
@@ -2259,7 +2264,9 @@ server <- function(input, output, session) {
       # Train-all mode: no temporal split. Use all subsequent children.
       if (use_all_addr || !"outcome" %in% names(d)) {
         all_outcomes <- first_test |>
-          inner_join(d |> select(AddressIdentifier, first_id), by = "AddressIdentifier") |>
+          inner_join(d |> distinct(AddressIdentifier, first_id) |>
+                       distinct(AddressIdentifier, .keep_all = TRUE),
+                     by = "AddressIdentifier", relationship = "many-to-one") |>
           filter(PATIENT_LOCAL_ID != first_id) |>
           summarize(outcome = as.integer(any(elevated == 1, na.rm = TRUE)),
                     .by = AddressIdentifier)
@@ -2275,9 +2282,10 @@ server <- function(input, output, session) {
       d <- d |> select(-any_of("outcome"))
 
       # Training outcome: non-feature children tested within the training window
+      d_keys <- d |> select(AddressIdentifier, first_id, first_year) |>
+        distinct(AddressIdentifier, .keep_all = TRUE)
       train_outcomes <- first_test |>
-        inner_join(d |> select(AddressIdentifier, first_id, first_year),
-                   by = "AddressIdentifier") |>
+        inner_join(d_keys, by = "AddressIdentifier", relationship = "many-to-one") |>
         filter(PATIENT_LOCAL_ID != first_id,
                sample_year >= first_year,
                sample_year <= train_end) |>
@@ -2286,8 +2294,8 @@ server <- function(input, output, session) {
 
       # Test outcome: non-feature children tested after the training window
       test_outcomes <- first_test |>
-        inner_join(d |> select(AddressIdentifier, first_id),
-                   by = "AddressIdentifier") |>
+        inner_join(d_keys |> select(AddressIdentifier, first_id),
+                   by = "AddressIdentifier", relationship = "many-to-one") |>
         filter(PATIENT_LOCAL_ID != first_id,
                sample_year > train_end) |>
         summarize(outcome = as.integer(any(elevated == 1, na.rm = TRUE)),
@@ -2521,15 +2529,21 @@ server <- function(input, output, session) {
     })
   }, ignoreInit = TRUE)
 
-  # Autorun on startup: only logistic model (skip Bayesian/XGBoost for speed)
+  # Autorun on startup: wait for inputs to initialize, then fit once
   rv$autorun_active <- FALSE
-  session$onFlushed(function() {
-    rv$autorun_active <- TRUE
-    tryCatch(do_fit_model(), error = function(e) {
-      showNotification(paste("Auto-run error:", e$message), type = "warning")
+  rv$autorun_done <- FALSE
+  observe({
+    req(input$random_effect, input$acs_mode, input$train_years, input$addr_covars)
+    if (rv$autorun_done) return()
+    isolate({
+      rv$autorun_done <- TRUE
+      rv$autorun_active <- TRUE
+      tryCatch(do_fit_model(), error = function(e) {
+        showNotification(paste("Auto-run error:", e$message), type = "warning", duration = 8)
+      })
+      rv$autorun_active <- FALSE
     })
-    rv$autorun_active <- FALSE
-  }, once = TRUE)
+  })
 
   output$interpretation <- renderUI({
     fit <- rv$fit
