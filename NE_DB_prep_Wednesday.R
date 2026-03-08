@@ -77,7 +77,14 @@ save_rds(lead |> select(address_id, PATIENT_LOCAL_ID, street_address, SAMPLE_DAT
          "all_tests")
 first_test <- lead |> slice_min(sample_year, by = PATIENT_LOCAL_ID, with_ties = FALSE)
 save_rds(first_test, "first_test")
-max_test <- lead |> slice_max(result, by = PATIENT_LOCAL_ID, with_ties = FALSE) |>
+# Priority-based max: prefer V (venous), then C (capillary), then unknown
+max_test <- lead |>
+  mutate(.st_priority = case_when(
+    toupper(sample_type) == "V" ~ 1L,
+    toupper(sample_type) == "C" ~ 2L,
+    TRUE ~ 3L)) |>
+  slice_min(.st_priority, by = PATIENT_LOCAL_ID, with_ties = TRUE) |>
+  slice_max(result, by = PATIENT_LOCAL_ID, with_ties = FALSE) |>
   select(all_of(names(first_test)))
 save_rds(max_test, "max_test")
 
