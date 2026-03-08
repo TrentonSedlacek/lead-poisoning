@@ -688,10 +688,12 @@ server <- function(input, output, session) {
     agg_geo <- function(level_key) {
       d <- geo_src |> filter(geo_level == level_key, sample_year >= yr[1], sample_year <= yr[2])
       if (nrow(d) == 0) return(tibble())
+      d <- d |> filter(!is.na(.data[[bll_col]]), !is.na(n_children))
+      if (nrow(d) == 0) return(tibble())
       d |> summarize(
         n_children = sum(n_children), n_elevated = sum(n_elevated),
-        mean_bll = if (use_geo()) exp(weighted.mean(log(pmax(.data[[bll_col]], 0.1)), n_children, na.rm = TRUE))
-                   else weighted.mean(.data[[bll_col]], n_children, na.rm = TRUE),
+        mean_bll = if (use_geo()) exp(weighted.mean(log(pmax(.data[[bll_col]], 0.1)), n_children))
+                   else weighted.mean(.data[[bll_col]], n_children),
         n_addresses = sum(n_addresses, na.rm = TRUE),
         addr_elevated = sum(addr_elevated, na.rm = TRUE),
         county = first(county), .by = geo_id) |>
