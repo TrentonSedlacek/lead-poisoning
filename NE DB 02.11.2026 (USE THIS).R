@@ -637,14 +637,13 @@ server <- function(input, output, session) {
                    if (input$use_quintile) {
                      q <- quantile(vals, probs = c(0, 0.2, 0.4, 0.6, 0.8, 1), na.rm = TRUE)
                      colors <- c("#ffffb2", "#fecc5c", "#fd8d3c", "#f03b20", "#bd0026")
-                     
-                     geo$fill_color <- sapply(seq_len(nrow(geo)), function(i) {
-                       if (!is.null(geo$suppressed) && !is.na(geo$suppressed[i]) && geo$suppressed[i]) return("#666666")
-                       v <- geo[[display_var]][i]
-                       if (is.na(v) || !is.finite(v)) return("#cccccc")
-                       bin <- findInterval(v, q, rightmost.closed = TRUE)
-                       colors[max(1, min(bin, 5))]
-                     })
+
+                     v <- geo[[display_var]]
+                     is_suppressed <- !is.null(geo$suppressed) & !is.na(geo$suppressed) & geo$suppressed
+                     is_missing <- is.na(v) | !is.finite(v)
+                     bin <- pmax(1L, pmin(findInterval(v, q, rightmost.closed = TRUE), 5L))
+                     geo$fill_color <- ifelse(is_suppressed, "#666666",
+                                              ifelse(is_missing, "#cccccc", colors[bin]))
                      
                      legend_labels <- c(paste0("Q1: ", round(q[1], 1), "-", round(q[2], 1)),
                                         paste0("Q2: ", round(q[2], 1), "-", round(q[3], 1)),
@@ -663,37 +662,38 @@ server <- function(input, output, session) {
                      }
                      pal <- colorNumeric("YlOrRd", domain = domain, na.color = "#cccccc")
                      
-                     geo$fill_color <- sapply(seq_len(nrow(geo)), function(i) {
-                       if (!is.null(geo$suppressed) && !is.na(geo$suppressed[i]) && geo$suppressed[i]) return("#666666")
-                       v <- geo[[display_var]][i]
-                       if (is.na(v) || !is.finite(v)) return("#cccccc")
-                       pal(min(v, domain[2]))
-                     })
+                     v <- geo[[display_var]]
+                     is_suppressed <- !is.null(geo$suppressed) & !is.na(geo$suppressed) & geo$suppressed
+                     is_missing <- is.na(v) | !is.finite(v)
+                     geo$fill_color <- ifelse(is_suppressed, "#666666",
+                                              ifelse(is_missing, "#cccccc", pal(pmin(v, domain[2]))))
                      
                      breaks <- seq(domain[1], domain[2], length.out = 6)
-                     legend_labels <- c(sapply(1:5, function(i) paste0(round(breaks[i], 1), "-", round(breaks[i+1], 1))),
+                     legend_labels <- c(paste0(round(breaks[1:5], 1), "-", round(breaks[2:6], 1)),
                                         "Suppressed", "No Data")
                      legend_colors <- c(pal(breaks[1:5] + diff(breaks[1:2])/2), "#666666", "#cccccc")
                    }
                    
-                   geo$tip <- sapply(seq_len(nrow(geo)), function(i) {
-                     sup_flag <- if (!is.null(geo$suppressed) && !is.na(geo$suppressed[i]) && geo$suppressed[i]) " [Suppressed]" else ""
-                     
-                     if (unit == "Children") {
-                       paste0("<b>", geo_label, ": ", geo[[id_col]][i], "</b>", sup_flag, "<br>",
-                              "Elevated Count: ", geo$n_elevated[i], "<br>",
-                              "Total Tested: ", format(geo$n_children[i], big.mark = ","), "<br>",
-                              "Percent Elevated: ", if (!is.na(geo$pct_elevated[i])) sprintf("%.1f%%", geo$pct_elevated[i]) else "N/A", "<br>",
-                              "Average BLL: ", if (!is.na(geo$mean_bll[i])) sprintf("%.2f \u00b5g/dL", geo$mean_bll[i]) else "N/A")
-                     } else {
-                       paste0("<b>", geo_label, ": ", geo[[id_col]][i], "</b>", sup_flag, "<br>",
-                              "Addresses Elevated: ", geo$addr_elevated[i], "<br>",
-                              "Addresses Tested: ", format(geo$n_addresses[i], big.mark = ","), "<br>",
-                              "Percent Elevated: ", if (!is.na(geo$n_addresses[i]) && geo$n_addresses[i] > 0)
-                                sprintf("%.1f%%", 100 * geo$addr_elevated[i] / geo$n_addresses[i]) else "N/A", "<br>",
-                              "Average BLL: ", if (!is.na(geo$mean_bll[i])) sprintf("%.2f \u00b5g/dL", geo$mean_bll[i]) else "N/A")
-                     }
-                   })
+                   sup_flag <- ifelse(!is.null(geo$suppressed) & !is.na(geo$suppressed) & geo$suppressed,
+                                      " [Suppressed]", "")
+                   pct_elev_txt <- ifelse(!is.na(geo$pct_elevated), sprintf("%.1f%%", geo$pct_elevated), "N/A")
+                   bll_txt <- ifelse(!is.na(geo$mean_bll), sprintf("%.2f \u00b5g/dL", geo$mean_bll), "N/A")
+
+                   if (unit == "Children") {
+                     geo$tip <- paste0("<b>", geo_label, ": ", geo[[id_col]], "</b>", sup_flag, "<br>",
+                                       "Elevated Count: ", geo$n_elevated, "<br>",
+                                       "Total Tested: ", format(geo$n_children, big.mark = ","), "<br>",
+                                       "Percent Elevated: ", pct_elev_txt, "<br>",
+                                       "Average BLL: ", bll_txt)
+                   } else {
+                     addr_pct <- ifelse(!is.na(geo$n_addresses) & geo$n_addresses > 0,
+                                        sprintf("%.1f%%", 100 * geo$addr_elevated / geo$n_addresses), "N/A")
+                     geo$tip <- paste0("<b>", geo_label, ": ", geo[[id_col]], "</b>", sup_flag, "<br>",
+                                       "Addresses Elevated: ", geo$addr_elevated, "<br>",
+                                       "Addresses Tested: ", format(geo$n_addresses, big.mark = ","), "<br>",
+                                       "Percent Elevated: ", addr_pct, "<br>",
+                                       "Average BLL: ", bll_txt)
+                   }
                    
                    leafletProxy("surv_map") %>% clearShapes() %>% clearControls() %>%
                      addPolygons(data = geo, fillColor = ~fill_color, fillOpacity = 0.7,
@@ -910,13 +910,10 @@ server <- function(input, output, session) {
       q <- quantile(vals_clean, probs = c(0, 0.2, 0.4, 0.6, 0.8, 1), na.rm = TRUE)
       colors <- c("#eff3ff", "#bdd7e7", "#6baed6", "#3182bd", "#08519c")
       
-      geo$quintile <- sapply(vals, function(v) {
-        if (is.na(v) || !is.finite(v)) return(NA_integer_)
-        findInterval(v, q, rightmost.closed = TRUE)
-      })
-      geo$fill_color <- sapply(geo$quintile, function(q_num) {
-        if (is.na(q_num)) "#cccccc" else colors[max(1, min(q_num, 5))]
-      })
+      geo$quintile <- ifelse(is.na(vals) | !is.finite(vals), NA_integer_,
+                              findInterval(vals, q, rightmost.closed = TRUE))
+      geo$fill_color <- ifelse(is.na(geo$quintile), "#cccccc",
+                                colors[pmax(1L, pmin(geo$quintile, 5L))])
       
       legend_labels <- c(paste0("Q1: ", round(q[1], 1), "-", round(q[2], 1)),
                          paste0("Q2: ", round(q[2], 1), "-", round(q[3], 1)),
@@ -930,12 +927,10 @@ server <- function(input, output, session) {
       max_v <- max(vals_clean, na.rm = TRUE)
       
       pal <- colorNumeric("Blues", domain = c(min_v, max_v), na.color = "#cccccc")
-      geo$fill_color <- sapply(vals, function(v) {
-        if (is.na(v) || !is.finite(v)) "#cccccc" else pal(v)
-      })
+      geo$fill_color <- ifelse(is.na(vals) | !is.finite(vals), "#cccccc", pal(vals))
       
       breaks <- seq(min_v, max_v, length.out = 6)
-      legend_labels <- c(sapply(1:5, function(i) paste0(round(breaks[i], 1), "-", round(breaks[i+1], 1))), "No Data")
+      legend_labels <- c(paste0(round(breaks[1:5], 1), "-", round(breaks[2:6], 1)), "No Data")
       legend_colors <- c(pal(breaks[1:5] + diff(breaks[1:2])/2), "#cccccc")
     }
     
@@ -1148,25 +1143,60 @@ server <- function(input, output, session) {
   
   # ===== RISK MODEL =====
   
+  # Recompute outcomes with temporal boundary and first_id exclusion to prevent
+
+  # data leakage. Without this, the pre-computed outcome includes future children
+  # and the feature child's own BLL leaks into the label.
+  recompute_outcomes <- function(md, train_end = NULL) {
+    if (!"address_id" %in% names(first_test) || !"address_id" %in% names(md)) return(md)
+
+    # Build address-to-feature-child mapping
+    feat_map <- md %>% select(address_id, first_year)
+
+    if (is.null(train_end)) {
+      # No temporal split: outcome = any OTHER child at the address was elevated
+      outcomes <- first_test %>%
+        inner_join(feat_map, by = "address_id") %>%
+        group_by(address_id) %>%
+        # Exclude the earliest child per address (used as the feature child)
+        filter(row_number(-sample_year) != n()) %>%
+        summarize(outcome = as.integer(any(elevated == 1, na.rm = TRUE)), .groups = "drop")
+    } else {
+      # Temporal split: training outcomes use only children tested within training window,
+      # test outcomes use only children tested after training window.
+      # This prevents future information from leaking into training labels.
+      outcomes <- first_test %>%
+        inner_join(feat_map, by = "address_id") %>%
+        group_by(address_id) %>%
+        filter(row_number(-sample_year) != n()) %>%
+        ungroup() %>%
+        mutate(period = if_else(sample_year <= train_end, "train", "test")) %>%
+        group_by(address_id, period) %>%
+        summarize(outcome = as.integer(any(elevated == 1, na.rm = TRUE)), .groups = "drop")
+    }
+
+    md %>% select(-any_of("outcome")) %>% left_join(outcomes, by = "address_id")
+  }
+
   run_model <- function() {
     req(model_data)
-    
+
     showNotification("Fitting model...", id = "fit_msg", duration = NULL)
-    
+
     tryCatch({
       re_var <- input$random_effect
       census_data <- if (re_var == "tract_geoid" && !is.null(tract_census)) tract_census else bg_census
       join_var <- if (re_var == "tract_geoid" && !is.null(tract_census)) "tract_geoid" else "bg_geoid"
       if (join_var == "bg_geoid") re_var <- "bg_geoid"
-      
+
       if (is.null(census_data)) {
         removeNotification("fit_msg")
         showNotification("Census data not available", type = "error")
         return()
       }
-      
+
       md <- model_data %>% left_join(census_data, by = join_var)
-      
+
       covars <- c(input$census_covars, input$addr_covars)
       census_covars_selected <- intersect(input$census_covars, names(census_data))
       if (length(census_covars_selected) > 0) {
@@ -1180,14 +1210,29 @@ server <- function(input, output, session) {
           return()
         }
       }
-      
+
+      # FIX: Recompute outcomes with temporal boundary to prevent data leakage.
+      # The pre-computed outcome in model_data spans ALL years, so training labels
+      # would contain information about future test-period children.
       if (input$train_all) {
+        md <- recompute_outcomes(md, train_end = NULL)
         train <- md; test <- md
+        showNotification(
+          "Warning: train_all=TRUE means train and test are identical. Model metrics are NOT valid for evaluation.",
+          type = "warning", duration = 8)
       } else {
-        train <- md %>% filter(first_year >= input$train_years[1], first_year <= input$train_years[2])
-        test  <- md %>% filter(first_year > input$train_years[2])
+        train_end <- input$train_years[2]
+        md <- recompute_outcomes(md, train_end = train_end)
+        # After recompute_outcomes with temporal split, md has a 'period' column
+        if ("period" %in% names(md)) {
+          train <- md %>% filter(period == "train", first_year >= input$train_years[1], first_year <= train_end)
+          test  <- md %>% filter(period == "test", first_year > train_end)
+        } else {
+          train <- md %>% filter(first_year >= input$train_years[1], first_year <= train_end)
+          test  <- md %>% filter(first_year > train_end)
+        }
       }
-      
+
       if (length(covars) > 0) {
         for (cv in covars) {
           if (cv %in% names(train)) {
@@ -1196,10 +1241,10 @@ server <- function(input, output, session) {
           }
         }
       }
-      
+
       train <- train %>% filter(!is.na(outcome), !is.na(.data[[re_var]]))
       test  <- test  %>% filter(!is.na(outcome), !is.na(.data[[re_var]]))
-      
+
       if (nrow(train) < 100) {
         removeNotification("fit_msg")
         showNotification("Not enough training data.", type = "error")
@@ -1210,27 +1255,34 @@ server <- function(input, output, session) {
         showNotification("Not enough test data.", type = "error")
         return()
       }
-      
+
       covars_in_data <- intersect(covars, names(train))
       is_scaled <- input$scale_vars
       rv$is_scaled <- is_scaled
-      
+
       if (length(covars_in_data) > 0) {
         terms <- if (is_scaled) paste0("scale(", covars_in_data, ")") else covars_in_data
         formula <- as.formula(paste("outcome ~", paste(terms, collapse = " + "), "+ (1 |", re_var, ")"))
       } else {
         formula <- as.formula(paste("outcome ~ 1 + (1 |", re_var, ")"))
       }
-      
-      fit <- suppressWarnings(glmer(formula, data = train, family = binomial,
-                                    control = glmerControl(optimizer = "bobyqa", optCtrl = list(maxfun = 50000))))
-      
-      fit_full <- suppressWarnings(glmer(formula, data = md %>% filter(!is.na(.data[[re_var]])),
+
+      # FIT MODEL: Single fit on all data for predictions, evaluated on held-out test set.
+      # Previously fitted glmer() twice (train + full), doubling computation time.
+      fit_full <- suppressWarnings(glmer(formula, data = md %>% filter(!is.na(outcome), !is.na(.data[[re_var]])),
                                          family = binomial,
                                          control = glmerControl(optimizer = "bobyqa", optCtrl = list(maxfun = 50000))))
-      
+
+      # For evaluation, fit on training data only (unbiased test-set performance)
+      fit <- if (!input$train_all) {
+        suppressWarnings(glmer(formula, data = train, family = binomial,
+                               control = glmerControl(optimizer = "bobyqa", optCtrl = list(maxfun = 50000))))
+      } else {
+        fit_full  # When train_all, they're the same
+      }
+
       test$pred_prob <- predict(fit, newdata = test, type = "response", allow.new.levels = TRUE)
-      
+
       addr_pred <- address_stats %>% left_join(census_data, by = join_var)
       can_pred <- !is.na(addr_pred[[re_var]])
       if (length(covars_in_data) > 0) {
@@ -1243,24 +1295,24 @@ server <- function(input, output, session) {
         addr_pred$pred_prob[can_pred] <- predict(fit_full, newdata = addr_pred[can_pred, ],
                                                  type = "response", allow.new.levels = TRUE)
       }
-      
+
       roc_obj <- roc(test$outcome, test$pred_prob, quiet = TRUE)
       coords_all <- coords(roc_obj, "all", ret = c("threshold", "sensitivity", "specificity"))
       youden_idx <- which.max(coords_all$sensitivity + coords_all$specificity - 1)
       youden <- list(threshold = coords_all$threshold[youden_idx],
                      sens = coords_all$sensitivity[youden_idx],
                      spec = coords_all$specificity[youden_idx])
-      
+
       n_test <- nrow(test)
       n_elev <- sum(test$outcome == 1)
       screen_n <- round(n_test * 0.5)
       test_ranked <- test %>% arrange(desc(pred_prob))
       model_det <- sum(test_ranked$outcome[1:screen_n] == 1)
       random_det <- round(n_elev * 0.5)
-      
+
       tests_per_pos_model <- screen_n / max(model_det, 1)
       tests_per_pos_random <- screen_n / max(random_det, 1)
-      
+
       rv$comparison <- list(n_test = n_test, n_elev = n_elev, screen_n = screen_n,
                             model_det = model_det, random_det = random_det,
                             model_pct = round(100 * model_det / max(n_elev, 1), 1),
@@ -1269,20 +1321,20 @@ server <- function(input, output, session) {
                             auc = round(as.numeric(auc(roc_obj)), 3),
                             tests_per_pos_model = round(tests_per_pos_model, 1),
                             tests_per_pos_random = round(tests_per_pos_random, 1))
-      
+
       if (length(covars_in_data) > 1) {
         rv$cor_matrix <- cor(train[covars_in_data], use = "pairwise.complete.obs")
       } else {
         rv$cor_matrix <- NULL
       }
-      
+
       rv$fit <- fit; rv$fit_full <- fit_full; rv$test_preds <- test
       rv$full_preds <- addr_pred; rv$roc_obj <- roc_obj; rv$youden <- youden
-      
+
       removeNotification("fit_msg")
       showNotification(paste("Model complete!", sum(!is.na(addr_pred$pred_prob)), "addresses predicted."),
                        type = "message", duration = 4)
-      
+
     }, error = function(e) {
       removeNotification("fit_msg")
       showNotification(paste("Error:", e$message), type = "error", duration = 8)
