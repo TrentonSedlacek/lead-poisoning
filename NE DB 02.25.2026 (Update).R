@@ -1755,7 +1755,7 @@ server <- function(input, output, session) {
     }
 
     scaled_vars <- character(0); scale_params <- list()
-    never_scale <- c(factor_covars, re_covars, numeric_covars[sapply(numeric_covars, is_year_var)])
+    never_scale <- c(factor_covars, re_covars)
     if (input$scale_vars && length(numeric_covars) > 0) {
       to_scale <- setdiff(numeric_covars, never_scale)
       for (v in to_scale) {
