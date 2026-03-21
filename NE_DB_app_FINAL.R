@@ -684,16 +684,16 @@ server <- function(input, output, session) {
       return(result)
     }
     # Use pre-aggregated: filter years, aggregate across years, apply suppression
-    bll_col <- if (use_geo()) "mean_bll_geo" else "mean_bll"
+    bll_col <- if (use_geo() && "mean_bll_geo" %in% names(geo_src)) "mean_bll_geo" else "mean_bll"
     agg_geo <- function(level_key) {
       d <- geo_src |> filter(geo_level == level_key, sample_year >= yr[1], sample_year <= yr[2])
       if (nrow(d) == 0) return(tibble())
-      d <- d |> filter(!is.na(.data[[bll_col]]), !is.na(n_children))
+      d <- d |> filter(!is.na(.data[[bll_col]]), !is.na(n_children), n_children > 0)
       if (nrow(d) == 0) return(tibble())
       d |> summarize(
         n_children = sum(n_children), n_elevated = sum(n_elevated),
-        mean_bll = if (use_geo()) exp(weighted.mean(log(pmax(.data[[bll_col]], 0.1)), n_children))
-                   else weighted.mean(.data[[bll_col]], n_children),
+        mean_bll = if (use_geo()) exp(weighted.mean(log(pmax(.data[[bll_col]], 0.1)), n_children, na.rm = TRUE))
+                   else weighted.mean(.data[[bll_col]], n_children, na.rm = TRUE),
         n_addresses = sum(n_addresses, na.rm = TRUE),
         addr_elevated = sum(addr_elevated, na.rm = TRUE),
         county = first(county), .by = geo_id) |>
