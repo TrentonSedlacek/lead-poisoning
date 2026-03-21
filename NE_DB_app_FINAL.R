@@ -1540,14 +1540,12 @@ server <- function(input, output, session) {
     # Split-aware outcome computation
     train_yrs <- input$train_years
     if (input$train_all) {
-      if (use_all_addr || !"outcome" %in% names(d)) {
-        outcomes <- first_test |>
-          inner_join(d |> select(AddressIdentifier, first_id), by="AddressIdentifier") |>
-          filter(PATIENT_LOCAL_ID != first_id) |>
-          summarize(outcome=as.integer(any(elevated==1, na.rm=TRUE)), .by=AddressIdentifier)
-        d <- d |> select(-any_of("outcome")) |> left_join(outcomes, by="AddressIdentifier") |>
-          filter(!is.na(outcome))
-      }
+      outcomes <- first_test |>
+        inner_join(d |> select(AddressIdentifier, first_id), by="AddressIdentifier") |>
+        filter(PATIENT_LOCAL_ID != first_id) |>
+        summarize(outcome=as.integer(any(elevated==1, na.rm=TRUE)), .by=AddressIdentifier)
+      d <- d |> select(-any_of("outcome")) |> left_join(outcomes, by="AddressIdentifier") |>
+        filter(!is.na(outcome))
       train <- d; test <- NULL
     } else {
       train_end <- train_yrs[2]; d <- d |> select(-any_of("outcome"))
