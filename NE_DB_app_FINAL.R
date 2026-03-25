@@ -1537,33 +1537,47 @@ server <- function(input, output, session) {
     if (length(num_covars) > 0) d <- d |> filter(if_all(all_of(num_covars), ~ !is.na(.) & is.finite(.)))
     if (length(fac_covars) > 0) d <- d |> filter(if_all(all_of(fac_covars), ~ !is.na(.)))
 
-    # Split-aware outcome computation
+    # Outcome + train/test split
     train_yrs <- input$train_years
-    if (input$train_all) {
-      outcomes <- first_test |>
-        inner_join(d |> select(AddressIdentifier, first_id), by="AddressIdentifier") |>
-        filter(PATIENT_LOCAL_ID != first_id) |>
-        summarize(outcome=as.integer(any(elevated==1, na.rm=TRUE)), .by=AddressIdentifier)
-      d <- d |> select(-any_of("outcome")) |> left_join(outcomes, by="AddressIdentifier") |>
-        filter(!is.na(outcome))
-      train <- d; test <- NULL
+    needs_outcome <- use_all_addr || inp$use_max || !"outcome" %in% names(d)
+    if (needs_outcome) {
+      # Dynamic outcome for all-addr / max-BLL modes (no pre-computed outcome)
+      if (input$train_all) {
+        outcomes <- first_test |>
+          inner_join(d |> select(AddressIdentifier, first_id), by="AddressIdentifier") |>
+          filter(PATIENT_LOCAL_ID != first_id) |>
+          summarize(outcome=as.integer(any(elevated==1, na.rm=TRUE)), .by=AddressIdentifier)
+        d <- d |> select(-any_of("outcome")) |> left_join(outcomes, by="AddressIdentifier") |>
+          filter(!is.na(outcome))
+        train <- d; test <- NULL
+      } else {
+        train_end <- train_yrs[2]; d <- d |> select(-any_of("outcome"))
+        train_out <- first_test |>
+          inner_join(d |> select(AddressIdentifier, first_id, first_year), by="AddressIdentifier") |>
+          filter(PATIENT_LOCAL_ID!=first_id, sample_year<=train_end) |>
+          summarize(outcome=as.integer(any(elevated==1, na.rm=TRUE)), .by=AddressIdentifier)
+        test_out <- first_test |>
+          inner_join(d |> select(AddressIdentifier, first_id), by="AddressIdentifier") |>
+          filter(PATIENT_LOCAL_ID!=first_id, sample_year>train_end) |>
+          summarize(outcome=as.integer(any(elevated==1, na.rm=TRUE)), .by=AddressIdentifier)
+        d_train <- d |> filter(first_year>=train_yrs[1], first_year<=train_end) |>
+          left_join(train_out, by="AddressIdentifier") |> filter(!is.na(outcome))
+        d_test <- d |> filter(first_year>train_end) |>
+          left_join(test_out, by="AddressIdentifier") |> filter(!is.na(outcome))
+        d <- bind_rows(d_train, d_test); train <- d_train; test <- d_test
+        showNotification(paste0("Split at ",train_end,": Train ",nrow(train)," (",round(100*mean(train$outcome),1),
+          "%) | Test ",nrow(test)," (",round(100*mean(test$outcome),1),"%)"), type="message", duration=6)
+      }
     } else {
-      train_end <- train_yrs[2]; d <- d |> select(-any_of("outcome"))
-      train_out <- first_test |>
-        inner_join(d |> select(AddressIdentifier, first_id, first_year), by="AddressIdentifier") |>
-        filter(PATIENT_LOCAL_ID!=first_id, sample_year<=train_end) |>
-        summarize(outcome=as.integer(any(elevated==1, na.rm=TRUE)), .by=AddressIdentifier)
-      test_out <- first_test |>
-        inner_join(d |> select(AddressIdentifier, first_id), by="AddressIdentifier") |>
-        filter(PATIENT_LOCAL_ID!=first_id, sample_year>train_end) |>
-        summarize(outcome=as.integer(any(elevated==1, na.rm=TRUE)), .by=AddressIdentifier)
-      d_train <- d |> filter(first_year>=train_yrs[1], first_year<=train_end) |>
-        left_join(train_out, by="AddressIdentifier") |> filter(!is.na(outcome))
-      d_test <- d |> filter(first_year>train_end) |>
-        left_join(test_out, by="AddressIdentifier") |> filter(!is.na(outcome))
-      d <- bind_rows(d_train, d_test); train <- d_train; test <- d_test
-      showNotification(paste0("Split at ",train_end,": Train ",nrow(train)," (",round(100*mean(train$outcome),1),
-        "%) | Test ",nrow(test)," (",round(100*mean(test$outcome),1),"%)"), type="message", duration=6)
+      # Use pre-computed outcome from prep script (default 2+ child mode)
+      if (input$train_all) {
+        train <- d; test <- NULL
+      } else {
+        train <- d |> filter(first_year >= train_yrs[1], first_year <= train_yrs[2])
+        test <- d |> filter(first_year > train_yrs[2])
+        showNotification(paste0("Split at ",train_yrs[2],": Train ",nrow(train)," (",round(100*mean(train$outcome),1),
+          "%) | Test ",nrow(test)," (",round(100*mean(test$outcome),1),"%)"), type="message", duration=6)
+      }
     }
     if (nrow(train) < 50) { showNotification("Too few training records", type="error"); return(NULL) }
     rv$train_sample <- train; rv$test_sample <- test
@@ -1575,7 +1589,7 @@ server <- function(input, output, session) {
 
     # Scaling
     scaled_vars <- character(0); scale_params <- list()
-    never_scale <- fac_covars
+    never_scale <- c(fac_covars, num_covars[grepl("year", num_covars, ignore.case = TRUE)])
     if (input$scale_vars && length(num_covars) > 0) {
       for (v in setdiff(num_covars, never_scale)) {
         m <- mean(train[[v]], na.rm=TRUE); s <- sd(train[[v]], na.rm=TRUE)
